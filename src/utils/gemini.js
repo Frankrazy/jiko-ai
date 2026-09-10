@@ -1,58 +1,36 @@
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY
+import { GoogleGenAI } from '@google/genai';
+
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+const ai = new GoogleGenAI({ apiKey: apiKey });
 
 export async function getRecipes(selectedIngredients, budget) {
-  if (!API_KEY || API_KEY === "your_key_here") {
-    console.error("❌ ERROR: VITE_GEMINI_API_KEY is not set correctly in Netlify!")
-    throw new Error("Missing API Key")
-  }
-
-  // 1. Fetch prices
-  const priceRes = await fetch("/prices.json")
-  const priceData = await priceRes.json()
+  // 1. Fetch live prices
+  const priceRes = await fetch("/prices.json");
+  const priceData = await priceRes.json();
 
   // 2. Build prompt
   const prompt = `You are Jiko AI, a Kenyan home cooking expert.
 
-User ingredients: ${selectedIngredients.join(", ")}
+Ingredients user has: ${selectedIngredients.join(", ")}
 Extra budget: KES ${budget}
 Current market prices: ${JSON.stringify(priceData.prices)}
 
-Task: Suggest 5 Kenyan recipes.
-Return ONLY a valid JSON array of objects with keys: name, status ("MAKE_NOW" | "ALMOST" | "OVER"), extraCost, toBuy (array of {item, qty, cost}), servings, time, ingredients, steps.`
+TASK: Suggest 5 Kenyan recipes.
+- "MAKE_NOW" if user has everything (extraCost: 0)
+- "ALMOST" if they need to buy extras within budget
+- "OVER" if it exceeds budget
 
-  // 3. API Call
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
+Return ONLY a valid JSON array of objects with keys: name, status, extraCost, toBuy (array of {item, qty, cost}), servings, time, ingredients, steps.`;
+
+  // 3. Call SDK using gemini-1.5-flash or gemini-2.0-flash
+  const response = await ai.models.generateContent({
+    model: 'gemini-1.5-flash',
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json', // Forces Gemini to return pure JSON!
     }
-  )
+  });
 
-  const data = await response.json()
-  
-  // 🔍 LOG RAW RESPONSE FOR DEBUGGING
-  console.log("🔍 Full Gemini Response:", data)
-
-  // Check if Google returned an error
-  if (data.error) {
-    console.error("❌ Google API Error:", data.error.message)
-    throw new Error(data.error.message)
-  }
-
-  // Check if candidates exist
-  if (!data.candidates || data.candidates.length === 0) {
-    console.error("❌ No candidates returned. Prompt feedback:", data.promptFeedback)
-    throw new Error("No recipes returned from AI.")
-  }
-
-  let text = data.candidates[0].content.parts[0].text
-
-  // Clean Markdown formatting if present
-  text = text.replace(/```json/g, "").replace(/```/g, "").trim()
-
-  return JSON.parse(text)
+  // 4. Return parsed recipes
+  return JSON.parse(response.text);
 }
