@@ -1,38 +1,20 @@
 const API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
 
 export async function getRecipes(selectedIngredients, budget) {
-  if (!API_KEY) {
-    console.error("❌ Missing VITE_OPENROUTER_API_KEY!");
-    throw new Error("Missing OpenRouter API Key in environment variables.");
-  }
+  if (!API_KEY) throw new Error("Missing OpenRouter API Key");
 
-  // 1. Fetch market prices
   const priceRes = await fetch("/prices.json");
   const priceData = await priceRes.json();
 
-  // 2. Build prompt
   const prompt = `You are Jiko AI, a Kenyan home cooking expert.
+User ingredients: ${selectedIngredients.join(", ")}
+Extra budget: KES ${budget}
+Current market prices: ${JSON.stringify(priceData.prices)}
 
-INGREDIENTS USER HAS IN THEIR FRIDGE:
-${selectedIngredients.join(", ")}
+TASK: Suggest 5 Kenyan recipes. 
+Return ONLY a valid JSON array of objects. 
+Keys: "name", "status", "extraCost", "toBuy", "servings", "time", "ingredients", "steps".`;
 
-USER'S ADDITIONAL BUDGET: KES ${budget}
-
-CURRENT KENYAN MARKET PRICES (per unit):
-${JSON.stringify(priceData.prices)}
-
-TASK: Suggest 5 Kenyan recipes based on user ingredients and budget.
-Status rules:
-- "MAKE_NOW" if user has all ingredients (extraCost: 0)
-- "ALMOST" if they need to buy missing ingredients within budget
-- "OVER" if buying missing ingredients exceeds budget
-
-Return ONLY a raw JSON array of 5 recipe objects with these keys:
-"name", "status", "extraCost", "toBuy" (array of {item, qty, cost}), "servings", "time", "ingredients" (array), "steps" (array).
-
-Do NOT include markdown block syntax like \`\`\`json. Return pure JSON text only.`;
-
-  // 3. Call OpenRouter API (using meta-llama/llama-3.2-3b-instruct:free)
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -42,14 +24,19 @@ Do NOT include markdown block syntax like \`\`\`json. Return pure JSON text only
       "X-Title": "Jiko AI"
     },
     body: JSON.stringify({
-      model: "meta-llama/llama-3.2-3b-instruct:free",
+      // 🟢 SWITCH TO THIS FREE MODEL (Stable and Very Fast)
+      model: "qwen/qwen-2.5-7b-instruct:free", 
       messages: [
+        {
+          role: "system",
+          content: "You are a helpful assistant that only outputs valid JSON arrays. Do not include markdown formatting or extra text."
+        },
         {
           role: "user",
           content: prompt
         }
       ],
-      temperature: 0.7
+      temperature: 0.6
     })
   });
 
@@ -57,16 +44,33 @@ Do NOT include markdown block syntax like \`\`\`json. Return pure JSON text only
 
   if (data.error) {
     console.error("❌ OpenRouter Error:", data.error);
-    throw new Error(data.error.message || "API Error");
+    // FALLBACK: If Qwen is busy, try Gemma 2 9B Free
+    if (data.error.code === 403 || data.error.code === 429) {
+        return getRecipesFallback(selectedIngredients, budget, priceData);
+    }
+    throw new Error(data.error.message);
   }
 
   let text = data.choices[0].message.content.trim();
-
-  // Clean Markdown wrappers if present
   text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+  
+  return JSON.parse(text);
+}
 
-  const parsedData = JSON.parse(text);
-
-  // If the model wrapped the array in an object key like { recipes: [...] }, extract it
-  return Array.isArray(parsedData) ? parsedData : (parsedData.recipes || Object.values(parsedData)[0]);
+// Fallback function in case the first free model is busy
+async function getRecipesFallback(ingredients, budget, priceData) {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "google/gemma-2-9b-it:free", 
+          messages: [{ role: "user", content: `Suggest 5 Kenyan recipes for ${ingredients} budget ${budget} as JSON.` }]
+        })
+    });
+    const data = await response.json();
+    let text = data.choices[0].message.content.trim();
+    return JSON.parse(text.replace(/```json/g, "").replace(/```/g, "").trim());
 }
