@@ -1,36 +1,42 @@
 const API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
 
 export async function getRecipes(selectedIngredients, budget) {
-  if (!API_KEY) throw new Error("Missing OpenRouter API Key in environment variables!");
+  if (!API_KEY) throw new Error("Missing OpenRouter API Key!");
 
-  // 1. Fetch current local market prices
   const priceRes = await fetch("/prices.json");
   const priceData = await priceRes.json();
 
-  // 2. Build prompt
-  const prompt = `You are Jiko AI, a Kenyan home cooking expert.
+  const prompt = `You are Jiko AI, a Kenyan cooking expert.
+User ingredients: ${selectedIngredients.join(", ")}
+Extra budget: KES ${budget}
+Prices: ${JSON.stringify(priceData.prices)}
 
-User has in fridge: ${selectedIngredients.join(", ")}
-User extra budget: KES ${budget}
-Current market prices: ${JSON.stringify(priceData.prices)}
+TASK: Suggest 5 Kenyan recipes. 
+Return ONLY a valid JSON array of objects. 
+Keys: "name", "status", "extraCost", "toBuy", "servings", "time", "ingredients", "steps".`;
 
-TASK: Suggest 5 Kenyan recipes.
-Status rules:
-- "MAKE_NOW" if user has everything (extraCost: 0)
-- "ALMOST" if missing ingredients cost <= KES ${budget}
-- "OVER" if missing ingredients cost > KES ${budget}
+  // List of models currently confirmed FREE on OpenRouter
+  const freeModels = [
+    "google/gemini-2.0-flash-exp:free",
+    "google/gemma-2-9b-it:free",
+    "mistralai/mistral-7b-instruct:free",
+    "huggingfaceh4/zephyr-7b-beta:free"
+  ];
 
-Return ONLY a valid JSON array of 5 objects with keys:
-"name", "status", "extraCost", "toBuy" (array of {item, qty, cost}), "servings", "time", "ingredients", "steps".`;
+  let lastError = null;
 
-  // 3. Try primary FREE model: Llama 3.3 70B Free
-  try {
-    return await callOpenRouter("meta-llama/llama-3.3-70b-instruct:free", prompt);
-  } catch (err) {
-    console.warn("Primary free model failed, trying fallback model...", err);
-    // 4. Fallback to Mistral 7B Free if primary is busy
-    return await callOpenRouter("mistralai/mistral-7b-instruct:free", prompt);
+  for (const model of freeModels) {
+    try {
+      console.log(`Trying free model: ${model}...`);
+      return await callOpenRouter(model, prompt);
+    } catch (err) {
+      console.warn(`${model} failed or is now paid. Trying next...`);
+      lastError = err;
+      continue; // Try the next model in the list
+    }
   }
+
+  throw new Error(`All free models are currently busy or unavailable. Error: ${lastError.message}`);
 }
 
 async function callOpenRouter(modelName, prompt) {
@@ -47,26 +53,26 @@ async function callOpenRouter(modelName, prompt) {
       messages: [
         {
           role: "system",
-          content: "You are a JSON generator. Respond ONLY with a valid raw JSON array. Do not include markdown tags like ```json or any introductory text."
+          content: "You are a JSON generator. Respond ONLY with a valid raw JSON array. No markdown, no intro text."
         },
         {
           role: "user",
           content: prompt
         }
       ],
-      temperature: 0.5
+      temperature: 0.7
     })
   });
 
   const data = await response.json();
 
   if (data.error) {
-    throw new Error(data.error.message || `Error calling ${modelName}`);
+    throw new Error(data.error.message);
   }
 
   let text = data.choices[0].message.content.trim();
-
-  // Clean JSON response
+  
+  // Clean JSON string
   const start = text.indexOf('[');
   const end = text.lastIndexOf(']');
   if (start !== -1 && end !== -1) {
